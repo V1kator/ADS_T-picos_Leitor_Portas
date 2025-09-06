@@ -6,6 +6,8 @@ from tkinter import ttk, messagebox, filedialog
 from queue import Queue, Empty
 import csv
 import json
+import select
+import errno
 
 class PortScanner:
     def __init__(self, root):
@@ -26,6 +28,7 @@ class PortScanner:
 
         self.create_widgets()
 
+    # ------------------- Interface -------------------
     def create_widgets(self):
         main = ttk.Frame(self.root, padding=10)
         main.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -46,13 +49,11 @@ class PortScanner:
         ttk.Radiobutton(stf, text="TCP", variable=self.scan_type, value="TCP").pack(side=tk.LEFT)
         ttk.Radiobutton(stf, text="UDP", variable=self.scan_type, value="UDP").pack(side=tk.LEFT, padx=12)
 
-        # Porta específica
         ttk.Label(main, text="Porta específica (opcional):").grid(row=4, column=0, sticky=tk.W, pady=4)
         self.single_port = ttk.Entry(main, width=15)
         self.single_port.grid(row=4, column=1, sticky=tk.W, pady=4)
         ttk.Label(main, text="(se preenchido, ignora o range de portas)").grid(row=4, column=2, sticky=tk.W)
 
-        # Portas range
         ttk.Label(main, text="Porta Inicial:").grid(row=5, column=0, sticky=tk.W, pady=4)
         self.port_start = ttk.Entry(main, width=12)
         self.port_start.grid(row=5, column=1, sticky=tk.W)
@@ -63,19 +64,15 @@ class PortScanner:
         self.port_end.grid(row=6, column=1, sticky=tk.W)
         self.port_end.insert(0, "1024")
 
-        # Botões principais
         btnf = ttk.Frame(main)
         btnf.grid(row=7, column=0, columnspan=4, pady=10)
         self.scan_button = ttk.Button(btnf, text="Iniciar Escaneamento", command=self.start_scan)
         self.scan_button.pack(side=tk.LEFT, padx=6)
         self.stop_button = ttk.Button(btnf, text="Parar Escaneamento", command=self.stop_scan, state=tk.DISABLED)
         self.stop_button.pack(side=tk.LEFT, padx=6)
-
-        # Export
         ttk.Button(btnf, text="Exportar CSV", command=self.export_csv).pack(side=tk.LEFT, padx=6)
         ttk.Button(btnf, text="Exportar JSON", command=self.export_json).pack(side=tk.LEFT, padx=6)
 
-        # Filtro
         ttk.Label(main, text="Filtrar por status:").grid(row=8, column=0, sticky=tk.W, pady=6)
         self.filter_var = tk.StringVar(value="Todos")
         self.filter_combo = ttk.Combobox(main, textvariable=self.filter_var, width=20,
@@ -83,11 +80,9 @@ class PortScanner:
         self.filter_combo.grid(row=8, column=1, sticky=tk.W)
         self.filter_combo.bind('<<ComboboxSelected>>', self.apply_filter)
 
-        # Barra de progresso (determinate configurada ao iniciar)
         self.progress = ttk.Progressbar(main, mode='determinate')
         self.progress.grid(row=9, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=10)
 
-        # Resultados
         resf = ttk.Frame(main)
         resf.grid(row=10, column=0, columnspan=4, sticky=(tk.W, tk.E, tk.N, tk.S))
         ttk.Label(resf, text="Resultados:").grid(row=0, column=0, sticky=tk.W)
@@ -108,20 +103,19 @@ class PortScanner:
         self.tree.configure(yscrollcommand=sb.set)
         sb.grid(row=1, column=3, sticky=(tk.N, tk.S))
 
-        # Layout stretch
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main.columnconfigure(1, weight=1)
         resf.columnconfigure(1, weight=1)
         resf.rowconfigure(1, weight=1)
 
-    # ------------------- Validação e geração de IPs -------------------
+    # ------------------- Validação e IPs -------------------
     def validate_inputs(self):
         try:
             ip_input = self.ip_entry.get().strip()
             if '/' in ip_input:
                 if not self.is_valid_cidr(ip_input):
-                    messagebox.showerror("Erro", "Formato CIDR inválido. Use: IP/MÁSCARA (ex: 192.168.1.0/24)")
+                    messagebox.showerror("Erro", "Formato CIDR inválido.")
                     return False
                 net = ipaddress.ip_network(ip_input, strict=False)
                 if net.num_addresses > 256:
@@ -130,7 +124,7 @@ class PortScanner:
             elif '-' in ip_input:
                 parts = ip_input.split('-')
                 if len(parts) != 2:
-                    messagebox.showerror("Erro", "Formato de range inválido. Use: IP_INICIAL-IP_FINAL")
+                    messagebox.showerror("Erro", "Formato de range inválido.")
                     return False
                 if '.' in parts[1]:
                     start_ip = ipaddress.ip_address(parts[0].strip())
@@ -143,26 +137,25 @@ class PortScanner:
             else:
                 ipaddress.ip_address(ip_input)
         except ValueError:
-            messagebox.showerror("Erro", "Endereço IP, range ou CIDR inválido.")
+            messagebox.showerror("Erro", "Endereço IP inválido.")
             return False
 
-        # Porta específica valida
         sp = self.single_port.get().strip()
         if sp:
             try:
                 p = int(sp)
                 if not (1 <= p <= 65535):
-                    messagebox.showerror("Erro", "Porta específica inválida (1-65535).")
+                    messagebox.showerror("Erro", "Porta específica inválida.")
                     return False
             except ValueError:
-                messagebox.showerror("Erro", "Porta específica deve ser um número inteiro.")
+                messagebox.showerror("Erro", "Porta específica deve ser um número.")
                 return False
         else:
             try:
                 start_p = int(self.port_start.get())
                 end_p = int(self.port_end.get())
                 if not (1 <= start_p <= 65535) or not (1 <= end_p <= 65535):
-                    messagebox.showerror("Erro", "Portas devem estar entre 1 e 65535.")
+                    messagebox.showerror("Erro", "Portas inválidas.")
                     return False
                 if start_p > end_p:
                     messagebox.showerror("Erro", "Porta inicial deve ser menor ou igual à porta final.")
@@ -175,8 +168,6 @@ class PortScanner:
 
     def is_valid_cidr(self, cidr):
         try:
-            if cidr.count('/') != 1:
-                return False
             ip, mask = cidr.split('/')
             ipaddress.ip_address(ip)
             mask = int(mask)
@@ -190,8 +181,7 @@ class PortScanner:
         try:
             if '/' in ip_input:
                 net = ipaddress.ip_network(ip_input, strict=False)
-                for ip in net.hosts():
-                    out.append(str(ip))
+                out = [str(ip) for ip in net.hosts()]
             elif '-' in ip_input:
                 parts = ip_input.split('-')
                 if '.' in parts[1]:
@@ -206,7 +196,7 @@ class PortScanner:
             else:
                 out.append(ip_input)
         except ValueError as e:
-            messagebox.showerror("Erro", f"Erro ao processar range de IPs: {e}")
+            messagebox.showerror("Erro", f"Erro ao processar IPs: {e}")
             return []
         return out
 
@@ -221,11 +211,9 @@ class PortScanner:
         except socket.timeout:
             return "Filtrada"
         except socket.error as e:
-            try:
-                if e.errno == 113:
-                    return "Inacessível"
-            except Exception:
-                pass
+            err = getattr(e, 'errno', None)
+            if err == 113:
+                return "Inacessível"
             return "Erro"
         except Exception:
             return "Erro"
@@ -233,33 +221,56 @@ class PortScanner:
     def scan_udp_port(self, ip, port, timeout=2.0):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(timeout)
-            sock.sendto(b'', (ip, port))
+            sock.setblocking(0)
+            payload = b"\x00"
             try:
-                _data, _addr = sock.recvfrom(1024)
-                return "Aberta"
-            except socket.timeout:
-                return "Aberta|Filtrada"
+                sock.sendto(payload, (ip, port))
             except socket.error as e:
-                try:
-                    if e.errno == 111:
-                        return "Fechada"
-                except Exception:
-                    pass
-                return "Filtrada"
-            finally:
+                err = getattr(e, 'errno', None)
                 sock.close()
-        except socket.error as e:
-            try:
-                if e.errno == 113:
+                if err in (errno.ENETUNREACH, errno.EHOSTUNREACH):
                     return "Inacessível"
-            except Exception:
-                pass
+                return "Erro"
+
+            ready_r, _, _ = select.select([sock], [], [], timeout)
+            if ready_r:
+                try:
+                    data, addr = sock.recvfrom(4096)
+                    sock.close()
+                    return "Aberta"
+                except socket.error as e:
+                    err = getattr(e, 'errno', None)
+                    sock.close()
+                    if err == errno.ECONNREFUSED:
+                        return "Fechada"
+                    return "Erro"
+            else:
+                sock.close()
+                return "Aberta|Filtrada"
+
+        except socket.error as e:
+            err = getattr(e, 'errno', None)
+            if err in (errno.ENETUNREACH, errno.EHOSTUNREACH):
+                return "Inacessível"
             return "Erro"
         except Exception:
             return "Erro"
 
-    # ------------------- Worker e UI updates -------------------
+    # ------------------- Worker -------------------
+    def status_matches_filter(self, status):
+        f = self.filter_var.get()
+        if f == "Todos":
+            return True
+        mapping = {
+            "Aberta": ["Aberta", "Aberta|Filtrada"],
+            "Filtrada": ["Filtrada", "Aberta|Filtrada"],
+            "Fechada": ["Fechada"],
+            "Inacessível": ["Inacessível"],
+            "Erro": ["Erro"],
+            "Aberta|Filtrada": ["Aberta|Filtrada"]
+        }
+        return status in mapping.get(f, [])
+
     def worker(self):
         while True:
             try:
@@ -269,45 +280,23 @@ class PortScanner:
                     break
                 continue
 
-            # Se o usuário pediu parada, libera a tarefa e sai
             if not self.scanning and self.stopped_by_user:
                 self.queue.task_done()
                 break
 
             status = self.scan_tcp_port(ip, port) if proto == "TCP" else self.scan_udp_port(ip, port)
-
             entry = {"ip": ip, "port": port, "status": status, "proto": proto}
-            self.scan_results.append(entry)
-
-            # Atualizar UI com segurança
-            self.root.after(0, self.update_tree, entry)
 
             with self.lock:
+                self.scan_results.append(entry)
                 self.completed_tasks += 1
-                # Atualiza progresso no thread principal
-                self.root.after(0, lambda v=self.completed_tasks: self.progress.config(value=v))
 
+            self.root.after(0, self.update_tree, entry)
             self.queue.task_done()
 
     def update_tree(self, entry):
-        ip = entry["ip"]
-        port = entry["port"]
-        status = entry["status"]
-        proto = entry["proto"]
-
-        f = self.filter_var.get()
-        show = (
-            f == "Todos" or
-            status == f or
-            (f == "Aberta" and status in ("Aberta", "Aberta|Filtrada")) or
-            (f == "Filtrada" and status in ("Filtrada", "Aberta|Filtrada"))
-        )
-        if not show:
-            # atualiza contadores mesmo que não mostre
-            self.update_result_count()
-            return
-
-        self.tree.insert('', 'end', values=(ip, f"{port}/{proto}", status))
+        if self.status_matches_filter(entry["status"]):
+            self.tree.insert('', 'end', values=(entry["ip"], f"{entry['port']}/{entry['proto']}", entry["status"]))
         self.update_result_count()
 
     def update_result_count(self):
@@ -318,71 +307,50 @@ class PortScanner:
         ambiguas = sum(1 for r in self.scan_results if r["status"] == "Aberta|Filtrada")
         inacessiveis = sum(1 for r in self.scan_results if r["status"] == "Inacessível")
         erros = sum(1 for r in self.scan_results if r["status"] == "Erro")
-
-        self.result_count.config(text=f"Total: {total} | Abertas: {abertas} | Fechadas: {fechadas} | Filtradas: {filtradas} | Ambíguas: {ambiguas} | Inacessíveis: {inacessiveis} | Erros: {erros}")
+        self.result_count.config(
+            text=f"Total: {total} | Abertas: {abertas} | Fechadas: {fechadas} | Filtradas: {filtradas} | Ambíguas: {ambiguas} | Inacessíveis: {inacessiveis} | Erros: {erros}")
 
     def apply_filter(self, event=None):
-        # limpa tree e aplica filtro atual
         for it in self.tree.get_children():
             self.tree.delete(it)
+        with self.lock:
+            for r in self.scan_results:
+                if self.status_matches_filter(r["status"]):
+                    self.tree.insert('', 'end', values=(r["ip"], f"{r['port']}/{r['proto']}", r["status"]))
+        self.update_result_count()
 
-        f = self.filter_var.get()
-        for r in self.scan_results:
-            status = r["status"]
-            proto = r["proto"]
-            show = (
-                f == "Todos" or
-                status == f or
-                (f == "Aberta" and status in ("Aberta", "Aberta|Filtrada")) or
-                (f == "Filtrada" and status in ("Filtrada", "Aberta|Filtrada"))
-            )
-            if show:
-                self.tree.insert('', 'end', values=(r["ip"], f"{r["port"]}/{proto}", status))
-
-    # ------------------- Controle de execução -------------------
+    # ------------------- Controle -------------------
     def start_scan(self):
         if not self.validate_inputs():
             return
 
-        # Reset UI/estado
         for it in self.tree.get_children():
             self.tree.delete(it)
-        self.scan_results = []
-        self.total_tasks = 0
-        self.completed_tasks = 0
+        with self.lock:
+            self.scan_results = []
+            self.total_tasks = 0
+            self.completed_tasks = 0
         self.stopped_by_user = False
 
         ip_list = self.get_ip_list()
         if not ip_list:
             return
 
-        # determina portas
-        ports = []
-        sp = self.single_port.get().strip()
-        if sp:
-            ports = [int(sp)]
-        else:
-            start_p = int(self.port_start.get())
-            end_p = int(self.port_end.get())
-            ports = list(range(start_p, end_p + 1))
+        ports = [int(self.single_port.get())] if self.single_port.get().strip() else list(
+            range(int(self.port_start.get()), int(self.port_end.get()) + 1))
 
         proto_now = self.scan_type.get()
         self.total_tasks = len(ip_list) * len(ports)
-
-        # configura barra de progresso
         self.progress.config(mode='determinate', maximum=self.total_tasks, value=0)
 
-        # preencher fila com protocolo fixo no momento do start
         for ip in ip_list:
             for p in ports:
                 self.queue.put((ip, p, proto_now))
 
-        # interface
         self.scanning = True
         self.scan_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
 
-        # threads
         num_threads = max(1, min(100, self.total_tasks))
         self.threads = []
         for _ in range(num_threads):
@@ -391,7 +359,6 @@ class PortScanner:
             t.start()
             self.threads.append(t)
 
-        # agendar verificação
         self.root.after(200, self.check_threads)
 
     def check_threads(self):
@@ -399,26 +366,19 @@ class PortScanner:
         done_by_tasks = (self.completed_tasks >= self.total_tasks) and self.queue.empty()
 
         if (not alive and self.queue.empty()) or done_by_tasks or (not self.scanning and self.stopped_by_user):
-            # finaliza
             self.scanning = False
             self.scan_button.config(state=tk.NORMAL)
             self.stop_button.config(state=tk.DISABLED)
-            try:
-                self.progress.stop()
-            except Exception:
-                pass
-
+            self.progress.stop()
             if self.stopped_by_user:
                 messagebox.showinfo("Info", "Escaneamento interrompido pelo usuário.")
             else:
                 messagebox.showinfo("Info", "Escaneamento concluído!")
             return
 
-        # continua checando
         self.root.after(200, self.check_threads)
 
     def stop_scan(self):
-        # sinaliza parada e drena a fila sem bloquear
         self.stopped_by_user = True
         self.scanning = False
         try:
@@ -427,7 +387,6 @@ class PortScanner:
                 self.queue.task_done()
         except Empty:
             pass
-        # desabilita botao de stop e habilita start
         self.scan_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
 
@@ -435,56 +394,37 @@ class PortScanner:
     def _get_export_list(self, filtered_only=False):
         if not filtered_only or self.filter_var.get() == "Todos":
             return list(self.scan_results)
-        f = self.filter_var.get()
-        out = []
-        for r in self.scan_results:
-            st = r["status"]
-            if st == f or (f == "Aberta" and st in ("Aberta", "Aberta|Filtrada")) or (f == "Filtrada" and st in ("Filtrada", "Aberta|Filtrada")):
-                out.append(r)
-        return out
+        return [r for r in self.scan_results if self.status_matches_filter(r["status"])]
 
     def export_csv(self):
-        if not self.scan_results:
+        data = self._get_export_list(True)
+        if not data:
             messagebox.showwarning("Aviso", "Nenhum resultado para exportar.")
             return
-        filtered_only = messagebox.askyesno("Exportar", "Exportar apenas os resultados filtrados? (Aplicar filtro atual)")
-        data = self._get_export_list(filtered_only=filtered_only)
-        file = filedialog.asksaveasfilename(defaultextension='.csv', filetypes=[('CSV files', '*.csv')])
-        if not file:
+        filename = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
+        if not filename:
             return
-        try:
-            with open(file, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['ip', 'port/proto', 'status'])
-                for r in data:
-                    writer.writerow([r['ip'], f"{r['port']}/{r['proto']}", r['status']])
-            messagebox.showinfo("Sucesso", f"Resultados exportados para {file}")
-        except Exception as e:
-            messagebox.showerror("Erro", f"Falha ao exportar CSV: {e}")
+        with open(filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["IP", "Porta", "Protocolo", "Status"])
+            for r in data:
+                writer.writerow([r["ip"], r["port"], r["proto"], r["status"]])
+        messagebox.showinfo("Sucesso", f"Exportado para {filename}")
 
     def export_json(self):
-        if not self.scan_results:
+        data = self._get_export_list(True)
+        if not data:
             messagebox.showwarning("Aviso", "Nenhum resultado para exportar.")
             return
-        filtered_only = messagebox.askyesno("Exportar", "Exportar apenas os resultados filtrados? (Aplicar filtro atual)")
-        data = self._get_export_list(filtered_only=filtered_only)
-        file = filedialog.asksaveasfilename(defaultextension='.json', filetypes=[('JSON files', '*.json')])
-        if not file:
+        filename = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
+        if not filename:
             return
-        try:
-            with open(file, 'w', encoding='utf-8') as f:
-                out = [{
-                    'ip': r['ip'],
-                    'port/proto': f"{r['port']}/{r['proto']}",
-                    'status': r['status']
-                } for r in data]
-                json.dump(out, f, indent=2, ensure_ascii=False)
-            messagebox.showinfo("Sucesso", f"Resultados exportados para {file}")
-        except Exception as e:
-            messagebox.showerror("Erro", f"Falha ao exportar JSON: {e}")
+        with open(filename, 'w') as f:
+            json.dump(data, f, indent=4)
+        messagebox.showinfo("Sucesso", f"Exportado para {filename}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     root = tk.Tk()
     app = PortScanner(root)
     root.mainloop()
